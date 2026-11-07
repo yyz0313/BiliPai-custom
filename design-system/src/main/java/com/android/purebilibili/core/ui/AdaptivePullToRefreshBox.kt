@@ -1,0 +1,163 @@
+package com.android.purebilibili.core.ui
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshState
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.movableContentOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.PullToRefresh as MiuixPullToRefresh
+import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState as rememberMiuixPullToRefreshState
+
+/**
+ * @param indicatorTopInset Distance from this box's top to where the indicator
+ * should sit — height of **overlaid** chrome only. Scaffold-padded bodies use 0.
+ * Custom [indicator] slots must apply the same inset themselves (e.g. home).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AdaptivePullToRefreshBox(
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(),
+    /**
+     * Overlay chrome height above the visual content start. Applied to MIUIX
+     * [contentPadding] and the default Material indicator.
+     */
+    indicatorTopInset: Dp = 0.dp,
+    state: PullToRefreshState = rememberPullToRefreshState(),
+    contentAlignment: Alignment = Alignment.TopStart,
+    /** Disable refresh gestures without discarding the list's composition state. */
+    enabled: Boolean = true,
+    indicator: @Composable BoxScope.() -> Unit = {
+        AdaptivePullToRefreshDefaultIndicator(
+            isRefreshing = isRefreshing,
+            state = state,
+            indicatorTopInset = indicatorTopInset,
+        )
+    },
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val contentHaptic = LocalHapticFeedback.current
+    val refreshHaptic = rememberAppHapticFeedback(AppHapticScene.REFRESH)
+    val layoutDirection = LocalLayoutDirection.current
+    val mergedContentPadding = remember(contentPadding, indicatorTopInset, layoutDirection) {
+        PaddingValues(
+            start = contentPadding.calculateStartPadding(layoutDirection),
+            top = contentPadding.calculateTopPadding() + indicatorTopInset,
+            end = contentPadding.calculateEndPadding(layoutDirection),
+            bottom = contentPadding.calculateBottomPadding(),
+        )
+    }
+
+    when (rememberPresetPrimitiveRenderer()) {
+        PresetPrimitiveRenderer.MIUIX_BRIDGED -> {
+            // MIUIX has no gesture-enabled flag. Move, rather than remount, the list
+            // when bypassing its refresh container so comment row state is retained.
+            val stableContent = remember {
+                movableContentOf<Alignment, @Composable BoxScope.() -> Unit> { alignment, body ->
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = alignment,
+                        content = body,
+                    )
+                }
+            }
+            if (enabled) {
+                // The native container owns its drag/refresh animation scope. Discard that
+                // state with the container when player expansion temporarily disables refresh;
+                // otherwise a cancelled Pulling/RefreshComplete session can consume later
+                // comment drags. movableContent below still preserves the list and its offset.
+                val miuixState = rememberMiuixPullToRefreshState()
+                CompositionLocalProvider(LocalHapticFeedback provides refreshHaptic) {
+                    MiuixPullToRefresh(
+                        isRefreshing = isRefreshing,
+                        onRefresh = onRefresh,
+                        modifier = modifier,
+                        pullToRefreshState = miuixState,
+                        contentPadding = mergedContentPadding,
+                        color = AppSurfaceTokens.primary(),
+                        refreshTexts = resolveMiuixPullToRefreshTexts(),
+                        content = {
+                            CompositionLocalProvider(LocalHapticFeedback provides contentHaptic) {
+                                stableContent(contentAlignment, content)
+                            }
+                        },
+                    )
+                }
+            } else {
+                Box(modifier = modifier, contentAlignment = contentAlignment) {
+                    stableContent(contentAlignment, content)
+                }
+            }
+        }
+        PresetPrimitiveRenderer.MATERIAL3 -> {
+            CompositionLocalProvider(LocalHapticFeedback provides refreshHaptic) {
+                ComfortablePullToRefreshBox(
+                    isRefreshing = isRefreshing,
+                    onRefresh = onRefresh,
+                    modifier = modifier,
+                    state = state,
+                    contentAlignment = contentAlignment,
+                    enabled = enabled,
+                    indicator = indicator,
+                    content = {
+                        CompositionLocalProvider(LocalHapticFeedback provides contentHaptic) { content() }
+                    },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Default pull-to-refresh chrome for [AdaptivePullToRefreshBox].
+ *
+ * - Material 3: official [PullToRefreshDefaults.Indicator] with circular progress.
+ * - Miuix: unused — the Miuix branch mounts native [MiuixPullToRefresh] instead.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BoxScope.AdaptivePullToRefreshDefaultIndicator(
+    isRefreshing: Boolean,
+    state: PullToRefreshState,
+    indicatorTopInset: Dp = 0.dp,
+    modifier: Modifier = Modifier,
+) {
+    val indicatorModifier = modifier
+        .align(Alignment.TopCenter)
+        .padding(top = indicatorTopInset)
+    when (rememberPresetPrimitiveRenderer()) {
+        PresetPrimitiveRenderer.MATERIAL3 -> {
+            PullToRefreshDefaults.Indicator(
+                modifier = indicatorModifier,
+                isRefreshing = isRefreshing,
+                state = state,
+                color = AppContentColors.accent(),
+            )
+        }
+        PresetPrimitiveRenderer.MIUIX_BRIDGED -> {
+            PullToRefreshDefaults.Indicator(
+                modifier = indicatorModifier,
+                isRefreshing = isRefreshing,
+                state = state,
+            )
+        }
+    }
+}
