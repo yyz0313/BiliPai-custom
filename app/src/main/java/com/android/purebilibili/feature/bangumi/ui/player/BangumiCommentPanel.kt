@@ -1,0 +1,251 @@
+package com.android.purebilibili.feature.bangumi.ui.player
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.android.purebilibili.core.store.SettingsManager
+import com.android.purebilibili.core.ui.LocalAppThemeConfig
+import com.android.purebilibili.core.ui.blur.hazeSourceCompat
+import com.android.purebilibili.core.ui.blur.topSolidProgressiveFade
+import com.android.purebilibili.core.ui.components.AppLiquidGlassBackToTopButton
+import com.android.purebilibili.core.ui.rememberBackToTopButtonEnabled
+import com.android.purebilibili.data.model.response.ReplyItem
+import com.android.purebilibili.feature.dynamic.components.ImagePreviewSourceAnchor
+import com.android.purebilibili.feature.dynamic.components.ImagePreviewTextContent
+import com.android.purebilibili.feature.home.components.biliPaiProgressiveTopBlur
+import com.android.purebilibili.feature.video.screen.VideoCommentTab
+import com.android.purebilibili.feature.video.screen.shouldUseLightweightCommentRendering
+import com.android.purebilibili.feature.video.ui.components.BottomInputBar
+import com.android.purebilibili.feature.video.ui.components.CommentFraudDetectingBanner
+import com.android.purebilibili.feature.video.ui.components.CommentSearchSheet
+import com.android.purebilibili.feature.video.ui.components.VideoCommentFloatingHeader
+import com.android.purebilibili.feature.video.ui.components.resolveBottomInputBarContentBottomPadding
+import com.android.purebilibili.feature.video.ui.components.shouldShowVideoCommentBackToTop
+import com.android.purebilibili.feature.video.viewmodel.CommentSortMode
+import com.android.purebilibili.feature.video.viewmodel.VideoCommentViewModel
+import dev.chrisbanes.haze.HazeState
+import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.blur.layerBackdrop
+import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+
+/** Episode wiring only; ordinary videos own the shared list, chrome and composer appearance. */
+@Composable
+internal fun BangumiCommentPanel(
+    viewModel: VideoCommentViewModel,
+    listState: LazyListState,
+    showIdentityDecorations: Boolean,
+    isVideoPlaying: Boolean,
+    maxTimestampMs: Long?,
+    onRootCommentClick: () -> Unit,
+    onReplyClick: (ReplyItem) -> Unit,
+    onUserClick: (Long) -> Unit,
+    onCommentUrlClick: (String) -> Unit,
+    onTimestampClick: ((Long) -> Unit)?,
+    onImagePreview: (List<String>, Int, ImagePreviewSourceAnchor?, ImagePreviewTextContent?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val state by viewModel.commentState.collectAsStateWithLifecycle()
+    val fullSearchState by viewModel.fullSearchState.collectAsStateWithLifecycle()
+    val fullSearchReplies by viewModel.fullSearchReplies.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val backdrop = rememberLayerBackdrop()
+    val hazeState = remember { HazeState() }
+    val themeConfig = LocalAppThemeConfig.current
+    val liquidGlassEnabled = themeConfig.liquidGlassEnabled
+    val progressiveHeaderEnabled = themeConfig.progressiveTopBlurEnabled && !themeConfig.headerBlurEnabled
+    val solidHeaderEnabled = themeConfig.progressiveTopFadeEnabled && !themeConfig.headerBlurEnabled
+    val floatingHeader = liquidGlassEnabled || progressiveHeaderEnabled || solidHeaderEnabled
+    val density = LocalDensity.current
+    val commentHeaderHeightPx = remember(density, liquidGlassEnabled) {
+        mutableFloatStateOf(with(density) { 46.dp.toPx() })
+    }
+    val commentHeaderHeightProvider = remember(commentHeaderHeightPx) {
+        { commentHeaderHeightPx.floatValue }
+    }
+    val showBackToTop by remember(listState) {
+        derivedStateOf {
+            shouldShowVideoCommentBackToTop(
+                firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+            )
+        }
+    }
+    val lightweightRendering by remember(listState, isVideoPlaying) {
+        derivedStateOf {
+            shouldUseLightweightCommentRendering(
+                selectedTabIndex = 1,
+                isVideoPlaying = isVideoPlaying,
+                isCommentListScrolling = listState.isScrollInProgress,
+            )
+        }
+    }
+    var showSearch by remember { mutableStateOf(false) }
+    val changeSort: (CommentSortMode) -> Unit = { mode ->
+        viewModel.setSortMode(mode)
+        scope.launch { SettingsManager.setCommentDefaultSortMode(context, mode.apiMode) }
+    }
+    val bottomPadding = resolveBottomInputBarContentBottomPadding(
+        showBar = true,
+        floatingLiquidGlass = liquidGlassEnabled,
+        showActionButtonsFallback = false,
+    ) + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    Column(modifier = modifier) {
+        CommentFraudDetectingBanner(isDetecting = state.isDetectingFraud)
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            // Only the list is captured. Glass header/input/back-to-top are sibling overlays,
+            // so no glass surface can recursively sample its own RenderNode.
+            VideoCommentTab(
+                listState = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .layerBackdrop(backdrop)
+                    .hazeSourceCompat(hazeState)
+                    .background(MaterialTheme.colorScheme.surface),
+                upMid = state.upMid,
+                maxTimestampMs = maxTimestampMs,
+                replies = state.replies,
+                replyCount = state.replyCount,
+                emoteMap = emptyMap(),
+                isRepliesLoading = state.isRepliesLoading,
+                isRepliesRefreshing = state.isRepliesRefreshing,
+                repliesError = state.repliesError,
+                isRepliesEnd = state.isRepliesEnd,
+                paginationPage = state.nextPage,
+                voteCard = state.voteCard,
+                onUpClick = onUserClick,
+                onSubReplyClick = viewModel::openSubReply,
+                onCommentReplyClick = onReplyClick,
+                onLoadMoreReplies = viewModel::loadComments,
+                onRefreshReplies = viewModel::refreshComments,
+                onImagePreview = onImagePreview,
+                onTimestampClick = onTimestampClick,
+                contentPadding = PaddingValues(bottom = bottomPadding),
+                currentMid = state.currentMid,
+                showUpFlag = state.showUpFlag,
+                dissolvingIds = state.dissolvingIds,
+                pinnedReplyIds = state.pinnedReplyIds,
+                onDeleteComment = viewModel::deleteComment,
+                onDissolveStart = viewModel::startDissolve,
+                onCommentLike = viewModel::likeComment,
+                onCommentHate = viewModel::hateComment,
+                likedComments = state.likedComments,
+                hatedComments = state.hatedComments,
+                onCommentUrlClick = onCommentUrlClick,
+                onReportComment = { rpid, reason -> viewModel.reportComment(rpid, reason) },
+                onToggleTopComment = viewModel::toggleTopComment,
+                onCheckCommentFraud = viewModel::checkCommentFraud,
+                showIdentityDecorations = showIdentityDecorations,
+                lightweightCommentRendering = lightweightRendering,
+                sortMode = state.sortMode,
+                onSortModeChange = changeSort,
+                showNativeSortHeader = true,
+                showSortControlInHeader = true,
+                showHeader = !floatingHeader,
+                compactSortHeader = true,
+                floatingHeaderContentPaddingPx = if (floatingHeader) commentHeaderHeightProvider else null,
+                onSearchClick = { showSearch = true },
+            )
+            if (floatingHeader) {
+                // 渐隐只覆盖列表采样层，标题和排序控件始终绘制在材质上方。
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(),
+                ) {
+                    Box(
+                        modifier = Modifier.matchParentSize()
+                            .biliPaiProgressiveTopBlur(
+                                backdrop = backdrop,
+                                enabled = progressiveHeaderEnabled,
+                                surfaceColor = androidx.compose.ui.graphics.Color.Transparent,
+                            )
+                            .topSolidProgressiveFade(
+                                surfaceColor = MaterialTheme.colorScheme.surface,
+                                enabled = solidHeaderEnabled,
+                            ),
+                    )
+                    VideoCommentFloatingHeader(
+                        count = state.replyCount,
+                        sortMode = state.sortMode,
+                        onSortModeChange = changeSort,
+                        onSearchClick = { showSearch = true },
+                        backdrop = backdrop,
+                        liquidGlassEnabled = liquidGlassEnabled,
+                        compactTitleTypography = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onSizeChanged { size ->
+                                if (size.height > 0 && commentHeaderHeightPx.floatValue != size.height.toFloat()) {
+                                    commentHeaderHeightPx.floatValue = size.height.toFloat()
+                                }
+                            },
+                    )
+                }
+            }
+            BottomInputBar(
+                modifier = Modifier.align(Alignment.BottomCenter),
+                isLiked = false,
+                likeStatusKnown = false,
+                isFavorited = false,
+                isCoined = false,
+                onLikeClick = {},
+                onFavoriteClick = {},
+                onCoinClick = {},
+                onShareClick = {},
+                onCommentClick = onRootCommentClick,
+                backdrop = if (liquidGlassEnabled) backdrop else null,
+                hazeState = hazeState,
+                isScrollInProgressProvider = { listState.isScrollInProgress },
+                scrollPositionProvider = { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset },
+                // 番剧没有普通投稿的赞/币/收藏操作，仅复用真实可用的评论输入入口。
+                showActionButtons = false,
+            )
+            AppLiquidGlassBackToTopButton(
+                visible = rememberBackToTopButtonEnabled() && showBackToTop,
+                backdrop = backdrop,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 20.dp, bottom = bottomPadding),
+                onClick = { scope.launch { listState.animateScrollToItem(0) } },
+            )
+        }
+    }
+    if (showSearch) {
+        CommentSearchSheet(
+            replies = state.replies,
+            fullReplies = fullSearchReplies,
+            fullSearchState = fullSearchState,
+            onLoadAllComments = viewModel::loadAllCommentsForSearch,
+            upMid = state.upMid,
+            onCommentClick = onReplyClick,
+            onSubReplyClick = { viewModel.openSubReply(it) },
+            onDismiss = { showSearch = false },
+            miuixBackdrop = backdrop,
+        )
+    }
+}
